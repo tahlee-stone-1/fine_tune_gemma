@@ -28,8 +28,8 @@ def fine_tune(
     output_dir="./outputs",
     num_train_epochs=1,
     learning_rate=2e-4,
-    batch_size=8,
-    grad_accum=2,
+    batch_size=4,
+    grad_accum=4,
     max_seq_length=768,
     fp16=False,
 ):
