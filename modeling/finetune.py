@@ -19,21 +19,19 @@ dagshub.init(
     repo_name="210-section-5-YOELO",
     mlflow=True
 )
-mlflow.set_experiment("finetuning-codegemma-instruct")  # CHANGED
+mlflow.set_experiment("finetuning-codegemma-instruct")
 
 
 def fine_tune(
     model_name,
     dataset_name,
     output_dir="./outputs",
-    num_train_epochs=2,
-    learning_rate=1.5e-4,
+    num_train_epochs=1,           # 1 epoch is fine
+    learning_rate=2e-5,           # KEY FIX: 10x lower than Llama (Gemma is more sensitive)
     batch_size=4,
     grad_accum=4,
     max_seq_length=768,
-    fp16=False,
 ):
-    # ADDED: HF token for CodeGemma access
     hf_token = os.getenv("HF_TOKEN")
     
     with mlflow.start_run():
@@ -47,37 +45,32 @@ def fine_tune(
             "max_seq_length": max_seq_length,
         })
 
-        # Load dataset from Hugging Face
         print(f"Loading dataset from Hugging Face: {dataset_name}")
         dataset = load_dataset(dataset_name, split="train")
         print(f"Loaded {len(dataset)} samples.")
 
-        # Tokenizer - CHANGED: Added token for CodeGemma
         tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        # Tokenize - data now has Gemma format
         def tokenize(example):
             text = example.get("text", "")
             return tokenizer(text, truncation=True, max_length=max_seq_length, padding="max_length")
 
         tokenized = dataset.map(tokenize, batched=True, remove_columns=dataset.column_names)
 
-        # Load model - CHANGED: bfloat16 + token + eager attention
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.bfloat16,  # CHANGED: Gemma prefers bfloat16
+            torch_dtype=torch.bfloat16,
             device_map="auto",
-            token=hf_token,  # ADDED
-            attn_implementation="eager",  # ADDED: Gemma compatibility
+            token=hf_token,
+            attn_implementation="eager",
         )
 
-        # LoRA setup - CHANGED: Updated target modules for Gemma
         lora_config = LoraConfig(
             r=16,
             lora_alpha=32,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],  # CHANGED
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
             lora_dropout=0.05,
             bias="none",
             task_type="CAUSAL_LM",
@@ -85,7 +78,6 @@ def fine_tune(
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
 
-        # Trainer setup
         data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
         training_args = TrainingArguments(
             output_dir=output_dir,
@@ -100,8 +92,9 @@ def fine_tune(
             report_to=["mlflow"],
             save_steps=500,
             optim="adamw_torch",
-            warmup_ratio=0.03,
+            warmup_ratio=0.1,          # KEY FIX: more warmup
             lr_scheduler_type="cosine",
+            max_grad_norm=1.0,         # KEY FIX: gradient clipping
         )
 
         trainer = Trainer(
@@ -120,7 +113,6 @@ def fine_tune(
 
 
 if __name__ == "__main__":
-    # CHANGED: CodeGemma defaults
     model = os.getenv("MODEL_NAME", "google/codegemma-7b-it")
     dataset_name = os.getenv("HF_DATASET", "tahleestone/k8s_instruct_dataset_gemma")
     fine_tune(model_name=model, dataset_name=dataset_name)
